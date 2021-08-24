@@ -1,0 +1,312 @@
+# Demonstration Code for 
+# "What's Vol Got To Do With It?"
+# (c) 2021 Rufus Rankin
+# http://www.rufusrankin.com 
+# This code and the referenced article 
+# Are for information purposes only
+# No investment advice or warranty is provided
+# By the author or his affiliates
+# Use at your own risk
+
+#Load packages
+
+require(tidyquant)
+require(tidyverse)
+require(riingo)
+require(timetk)
+require(roll)
+require(future.apply)
+
+options(scipen = 50)
+
+###############
+## Functions ##
+###############
+
+#function to compute portfolio statistics (for Crypto scale = 365)
+
+stratStats.crypto <- function(rets) {
+  stats <- rbind(table.AnnualizedReturns(rets,scale = 365), maxDrawdown(rets),CDD(rets),
+                 maxDrawdown(rets)/StdDev.annualized(rets,scale = 365),vami(rets))
+  #vami <- cumprod(1+rets)
+  #end.vami<- last(vami)
+  #stats[6,] <- stats[1,]/stats[4,]
+  #stats[7,] <- stats[1,]/stats[5,]
+  #stats[6,] <- stats[4,]/stats[3,]
+  stats[8,] <- price.rsq(rets)
+  rownames(stats)[1] <- "AROR"
+  rownames(stats)[2] <- "SD"
+  rownames(stats)[3] <- "SR"
+  rownames(stats)[4] <- "MaxDD"
+  rownames(stats)[5] <- "CDaR"
+  rownames(stats)[6] <- "MDD/SD"
+  rownames(stats)[7] <- "END$"
+  rownames(stats)[8] <- "RSQ"
+  stats<-round(stats,4)
+  return(stats)
+}
+
+#SIMULATION FUNCTIONS
+
+#volatility target simulation function
+
+vt.funk.stat<-function(x,k,lb, vtgt, smoo){
+  ret<-x[,sample(ncol(x),k,replace = FALSE)]
+  roll.vol<-na.omit(roll_sd(ret, width = lb))
+  vol.mult<-vtgt/roll.vol
+  vol.mult.smooth<-na.omit(roll_mean(vol.mult, width = smoo))
+  vadj.rets<-na.omit(ret * vol.mult.smooth)
+  vadj.port<-Return.portfolio(vadj.rets, rebalance_on = "quarters")
+  vp.stats<-stratStats(vadj.port)
+  return(vp.stats)
+}
+
+#"2020-02-27"
+
+#equal weight simulation function
+#date is trimmed to match vol tgt portfolios
+
+ew.funk.stat<-function(x,k){
+  ret<-x[,sample(ncol(x),k,replace = FALSE)]
+  ew.port<-Return.portfolio(ret, rebalance_on = "quarters")
+  ewc<-ew.port["2020-02-27/"]
+  ew.stats<-stratStats(ewc)
+  return(ew.stats)
+}
+
+###END FUNCTIONS###
+
+#BTC
+
+btc.dp<-xts(btc$close,order.by = btc$date)
+
+index(btc.dp)<-as.Date.character(index(btc.dp))
+
+btc.dr<-na.omit(diff(log(btc.dp)))
+
+colnames(btc.dr)<-"BTC"
+
+charts.PerformanceSummary(btc.dr, main = "BTC Daily Returns")
+
+stratStats.crypto(btc.dr)
+
+#cut to dates of vol tgt example
+
+btc.dr.c<-btc.dr["2015-05-01/"]
+
+charts.PerformanceSummary(btc.dr.c, main = "BTC Daily Returns")
+
+stratStats.crypto(btc.dr.c)
+
+#FULL SAMPLE VOL TARGET (UNREALISTIC)
+
+btc.vt<-.33 * btc.dr
+
+charts.PerformanceSummary(btc.vt, main = "BTC 1/3 Allocation - Perfect Hindsight")
+
+stratStats.crypto(btc.vt)
+
+
+btc.vt.cut<-btc.vt["2015-05-01/"]
+
+charts.PerformanceSummary(btc.vt.cut, main = "BTC 1/3 Allocation - Perfect Hindsight")
+
+stratStats.crypto(btc.vt.cut)
+
+#ROLLING VOL TARGET
+
+btc.sd<-na.omit(roll_sd(btc.dr, width = 90)) #vol estimate
+
+btc.vm<-(0.015/btc.sd) #vol multiple (fraction in BTC)
+
+btc.vm[btc.vm > 1.0]<-1.0 #cut off vms > 1.0
+
+btc.vm.smooth<-na.omit(roll_mean(btc.vm, width = 30)) #rolling 30d average to approximate monthly rebal
+
+plot(btc.vm.smooth, main = "Rolling Vol Multiple")
+
+btc.vm.months<-btc.vm[endpoints(btc.vm, on = "months")]
+
+plot(btc.vm.months, main = "Truncated Rolling Vol Multiple")
+
+#btc.vtr<-na.omit(btc.dr * btc.vm.sc)
+
+btc.vtr<-Return.portfolio(btc.dr, weights = btc.vm.months)
+
+charts.PerformanceSummary(btc.vtr, main = "BTC with Vol Tgt")
+
+stratStats.crypto(btc.vtr)
+
+#compare raw to vol tgt BTC
+
+btc.rt<-na.omit(cbind(btc.dr, btc.vtr))
+
+colnames(btc.rt)<-c("BTC-Raw","BTC-VT")
+
+chart.CumReturns(btc.rt, legend.loc = "topleft", 
+                 main = "BTC - Raw vs. Vol Tgt")
+
+charts.PerformanceSummary(btc.rt, legend.loc = "topleft",
+                          main = "BTC - Raw vs. Vol Tgt")
+
+stratStats.crypto(btc.rt)
+
+#########################
+# LARGER SAMPLE FOR SIMS
+#########################
+
+#cbdr.c - daily returns of 11 coins from coindesk 20 as of May 2021
+
+#sim 5/11 (n choose k of 11/5 = 462 combinations)
+
+#SIMULATION
+
+require(future.apply)
+
+plan(multiprocess, workers = 7)
+
+t1<-Sys.time()
+
+#epo.erc.test<-tk_tbl(future_replicate(1000,EPO.erc(cta.xts,shrink = 0.5)))
+
+vadj.test<-tk_tbl(future_replicate(500,vt.funk.stat(x=cbdr.c,k=5,lb=30,vtgt=0.015,smoo = 30)))
+
+#vadj.test.xts<-xts(vadj.test, order.by )
+
+t2<-Sys.time()
+
+t2-t1
+
+vadj.test.t<-t(vadj.test)
+vadj.test.t<-round(vadj.test.t, 4)
+
+colnames(vadj.test.t)<-c("AROR","SD","SR","MDD","CDaR","MDD/SD","END$","RSQ")
+
+vadj.test.aror<-summary(vadj.test.t[,1])
+vadj.test.sd<-summary(vadj.test.t[,2])
+vadj.test.sr<-summary(vadj.test.t[,3])
+vadj.test.cdar<-summary(vadj.test.t[,5])
+vadj.test.mdd<-summary(vadj.test.t[,4])
+vadj.test.mddsd<-summary(vadj.test.t[,6])
+vadj.test.tw<-summary(vadj.test.t[,7])
+vadj.test.rsq<-summary(vadj.test.t[,8])
+
+vadj.test.mean.stats<-round(colMeans(vadj.test.t),4)
+
+vadj.table<-rbind(vadj.test.aror,
+                  vadj.test.sd,
+                  vadj.test.sr,
+                  vadj.test.cdar,
+                  vadj.test.mdd,
+                  vadj.test.mddsd,
+                  vadj.test.tw,
+                  vadj.test.rsq)
+
+#EQUAL WEIGHT FOR COMPARISON
+
+require(future.apply)
+
+plan(multiprocess, workers = 7)
+
+t1<-Sys.time()
+
+#epo.erc.test<-tk_tbl(future_replicate(1000,EPO.erc(cta.xts,shrink = 0.5)))
+
+ew.test<-tk_tbl(future_replicate(500,ew.funk.stat(x=cbdr.c,k=5)))
+
+#ew.test.xts<-xts(ew.test, order.by )
+
+t2<-Sys.time()
+
+t2-t1
+
+ew.test.t<-t(ew.test)
+ew.test.t<-round(ew.test.t, 4)
+
+colnames(ew.test.t)<-c("AROR","SD","SR","MDD","CDaR","MDD/SD","END$","RSQ")
+
+ew.test.aror<-summary(ew.test.t[,1])
+ew.test.sd<-summary(ew.test.t[,2])
+ew.test.sr<-summary(ew.test.t[,3])
+ew.test.cdar<-summary(ew.test.t[,5])
+ew.test.mdd<-summary(ew.test.t[,4])
+ew.test.mddsd<-summary(ew.test.t[,6])
+ew.test.tw<-summary(ew.test.t[,7])
+ew.test.rsq<-summary(ew.test.t[,8])
+
+ew.table<-rbind(ew.test.aror,
+                  ew.test.sd,
+                  ew.test.sr,
+                  ew.test.cdar,
+                  ew.test.mdd,
+                  ew.test.mddsd,
+                  ew.test.tw,
+                  ew.test.rsq)
+
+ew.test.mean.stats<-round(colMeans(ew.test.t),4)
+
+#EXPORT
+
+write.csv(vadj.table,"VADJ-TEST-STATS-8-23-2021.csv")
+write.csv(ew.table,"EW-TEST-STATS-8-23-2021.csv")
+
+
+#DENSITY PLOTS 
+
+#SHARPE RATIOS
+
+sr.ew<-data.frame(ew.test.t[,3])
+colnames(sr.ew)<-"SR"
+sr.va<-data.frame(vadj.test.t[,3])
+colnames(sr.va)<-"SR"
+
+sr.ew$Sim<-"EW"
+sr.va$Sim<-"VA"
+
+sr.comp<-rbind(sr.ew,sr.va)
+
+ggplot(sr.comp, aes(SR, fill = Sim)) + geom_density(alpha = 0.2)
+
+ggplot(sr.comp, aes(SR, fill = Sim),main = "Sim Sharpe Ratios") + 
+  geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+
+# ggplot(vegLengths, aes(length, fill = veg)) + 
+#   geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+
+#TERMINAL WEALTH
+
+tw.ew<-data.frame(ew.test.t[,7])
+colnames(tw.ew)<-"TW"
+tw.va<-data.frame(vadj.test.t[,7])
+colnames(tw.va)<-"TW"
+
+tw.ew$Sim<-"EW"
+tw.va$Sim<-"VA"
+
+tw.comp<-rbind(tw.ew,tw.va)
+
+ggplot(tw.comp, aes(TW, fill = Sim)) + geom_density(alpha = 0.2)
+
+ggplot(tw.comp, aes(TW, fill = Sim),main = "Sim Sharpe Ratios") + 
+  geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+
+#MAX DRAWDOWN
+
+mdd.ew<-data.frame(ew.test.t[,4])
+colnames(mdd.ew)<-"MDD"
+mdd.va<-data.frame(vadj.test.t[,4])
+colnames(mdd.va)<-"MDD"
+
+mdd.ew$Sim<-"EW"
+mdd.va$Sim<-"VA"
+
+mdd.comp<-rbind(mdd.ew,mdd.va)
+
+ggplot(mdd.comp, aes(MDD, fill = Sim)) + geom_density(alpha = 0.2)
+
+ggplot(mdd.comp, aes(MDD, fill = Sim),main = "Sim Sharpe Ratios") + 
+  geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+
+
+########################################################
+########################################################
